@@ -132,29 +132,51 @@ with tab_image:
                             confidence = data["confidence"]
                             heatmap_b64 = data["heatmap_base64"]
                             face_b64 = data["cropped_face_base64"]
-                            
-                            # Render Verdict Badge
-                            if verdict == "Real":
-                                st.markdown(f'<div class="badge-real">VERDICT: REAL ({confidence*100:.1f}%)</div>', unsafe_allow_html=True)
-                            else:
-                                st.markdown(f'<div class="badge-fake">VERDICT: FAKE ({confidence*100:.1f}%)</div>', unsafe_allow_html=True)
-                                
-                            st.write("")
-                            st.progress(float(confidence))
-                            
-                            # Display Side-by-Side Face vs Grad-CAM Heatmap
-                            c1, c2 = st.columns(2)
-                            with c1:
-                                st.image(base64_to_pil(face_b64), caption="Extracted Face Crop (224x224)", use_container_width=True)
-                            with c2:
-                                st.image(base64_to_pil(heatmap_b64), caption="Grad-CAM Attention Focus", use_container_width=True)
-                                
-                            st.info("💡 **Grad-CAM Interpretation**: Highlighted red/yellow regions show the facial features (pupils, mouth, skin texture) the model focused on to make its prediction.")
                         else:
                             st.error(f"API Error ({response.status_code}): {response.json().get('detail', 'Unknown error')}")
+                            st.stop()
                     except Exception as e:
-                        st.error(f"Failed to connect to FastAPI backend server at '{api_base_url}'. Error: {e}")
-                        st.warning("Please ensure the FastAPI server is running (`uvicorn api.main:app --port 8000`).")
+                        # Fallback to direct model inference if FastAPI server is not reachable (e.g. on Streamlit Cloud)
+                        try:
+                            from src.predict import DeepfakePredictor
+                            checkpoint_path = os.path.join(PROJECT_ROOT, "models", "best_model.pth")
+                            predictor = DeepfakePredictor(checkpoint_path=checkpoint_path)
+                            pil_img = Image.open(uploaded_image).convert("RGB")
+                            res = predictor.predict_image(pil_img)
+                            
+                            verdict = res["verdict"]
+                            confidence = res["confidence"]
+                            
+                            # Convert PIL images to base64
+                            buffer_h = io.BytesIO()
+                            res["heatmap"].save(buffer_h, format="PNG")
+                            heatmap_b64 = base64.b64encode(buffer_h.getvalue()).decode("utf-8")
+                            
+                            buffer_f = io.BytesIO()
+                            res["cropped_face"].save(buffer_f, format="PNG")
+                            face_b64 = base64.b64encode(buffer_f.getvalue()).decode("utf-8")
+                        except Exception as fallback_err:
+                            st.error(f"Failed to connect to FastAPI backend server at '{api_base_url}' and direct fallback failed: {fallback_err}")
+                            st.warning("Please ensure FastAPI server is running (`uvicorn api.main:app --port 8000`) or model weights are present.")
+                            st.stop()
+                            
+                    # Render Verdict Badge
+                    if verdict == "Real":
+                        st.markdown(f'<div class="badge-real">VERDICT: REAL ({confidence*100:.1f}%)</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(f'<div class="badge-fake">VERDICT: FAKE ({confidence*100:.1f}%)</div>', unsafe_allow_html=True)
+                        
+                    st.write("")
+                    st.progress(float(confidence))
+                    
+                    # Display Side-by-Side Face vs Grad-CAM Heatmap
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.image(base64_to_pil(face_b64), caption="Extracted Face Crop (224x224)", use_container_width=True)
+                    with c2:
+                        st.image(base64_to_pil(heatmap_b64), caption="Grad-CAM Attention Focus", use_container_width=True)
+                        
+                    st.info("💡 **Grad-CAM Interpretation**: Highlighted red/yellow regions show the facial features (pupils, mouth, skin texture) the model focused on to make its prediction.")
 
 # ---------------------------------------------------------
 # TAB 2: VIDEO DEEPFAKE DETECTION
