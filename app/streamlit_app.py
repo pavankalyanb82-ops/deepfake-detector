@@ -74,7 +74,7 @@ st.markdown("""
         text-align: center;
     }
 </style>
-""", unsafe_allow_html=unsafe_allow_html)
+""", unsafe_allow_html=True)
 
 # Sidebar Configuration
 st.sidebar.title("🛡️ System Config")
