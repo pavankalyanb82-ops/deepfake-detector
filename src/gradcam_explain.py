@@ -39,14 +39,16 @@ class GradCAMExplainer:
     def __init__(self, checkpoint_path: str = "models/best_model.pth"):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         
-        if not os.path.exists(checkpoint_path):
-            raise FileNotFoundError(f"Checkpoint '{checkpoint_path}' not found. Run src/train_model.py first.")
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            self.backbone_name = checkpoint.get('backbone_name', 'resnet18')
+            self.model = DeepfakeClassifier(backbone_name=self.backbone_name, pretrained=False)
+            self.model.load_state_dict(checkpoint['state_dict'])
+        else:
+            print(f"[!] Warning: Checkpoint '{checkpoint_path}' not found. Initializing pretrained ResNet18 backbone.")
+            self.backbone_name = 'resnet18'
+            self.model = DeepfakeClassifier(backbone_name=self.backbone_name, pretrained=True)
             
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.backbone_name = checkpoint.get('backbone_name', 'resnet18')
-        
-        self.model = DeepfakeClassifier(backbone_name=self.backbone_name, pretrained=False)
-        self.model.load_state_dict(checkpoint['state_dict'])
         self.model.to(self.device)
         self.model.eval()
         
