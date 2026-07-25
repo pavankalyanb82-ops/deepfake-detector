@@ -2,16 +2,22 @@
 Phase 9: Interactive Web Application (app/streamlit_app.py)
 ------------------------------------------------------------
 Streamlit Frontend Dashboard for Deepfake Image & Video Detection.
-Communicates with the FastAPI backend server over HTTP REST APIs.
+Communicates with the FastAPI backend server over HTTP REST APIs with direct fallback.
 """
 
 import os
 import sys
 import io
+import tempfile
 import base64
 import requests
 from PIL import Image
 import streamlit as st
+
+# Ensure project root directory is in sys.path for direct imports & deployment
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # Set Streamlit Page Configuration
 st.set_page_config(
@@ -87,6 +93,13 @@ def base64_to_pil(b64_str: str) -> Image.Image:
     image_bytes = base64.b64decode(b64_str)
     return Image.open(io.BytesIO(image_bytes))
 
+@st.cache_resource
+def get_standalone_predictor():
+    """Loads predictor directly for standalone Streamlit Cloud deployment or offline mode."""
+    from src.predict import DeepfakePredictor
+    checkpoint_path = os.path.join(PROJECT_ROOT, "models", "best_model.pth")
+    return DeepfakePredictor(checkpoint_path=checkpoint_path)
+
 # Header Banner
 st.markdown("""
 <div class="header-box">
@@ -122,9 +135,9 @@ with tab_image:
             with col_results:
                 with st.spinner("Analyzing facial features and generating Grad-CAM heatmaps..."):
                     try:
-                        # Call FastAPI Backend Endpoint
+                        # Try FastAPI Backend Endpoint
                         files = {"file": (uploaded_image.name, uploaded_image.getvalue(), uploaded_image.type)}
-                        response = requests.post(f"{api_base_url}/predict-image", files=files, timeout=30)
+                        response = requests.post(f"{api_base_url}/predict-image", files=files, timeout=5)
                         
                         if response.status_code == 200:
                             data = response.json()
@@ -133,21 +146,17 @@ with tab_image:
                             heatmap_b64 = data["heatmap_base64"]
                             face_b64 = data["cropped_face_base64"]
                         else:
-                            st.error(f"API Error ({response.status_code}): {response.json().get('detail', 'Unknown error')}")
-                            st.stop()
-                    except Exception as e:
-                        # Fallback to direct model inference if FastAPI server is not reachable (e.g. on Streamlit Cloud)
+                            raise RuntimeError(f"API Error {response.status_code}")
+                    except Exception:
+                        # Direct Fallback for Streamlit Cloud deployment or offline mode
                         try:
-                            from src.predict import DeepfakePredictor
-                            checkpoint_path = os.path.join(PROJECT_ROOT, "models", "best_model.pth")
-                            predictor = DeepfakePredictor(checkpoint_path=checkpoint_path)
+                            predictor = get_standalone_predictor()
                             pil_img = Image.open(uploaded_image).convert("RGB")
                             res = predictor.predict_image(pil_img)
                             
                             verdict = res["verdict"]
                             confidence = res["confidence"]
                             
-                            # Convert PIL images to base64
                             buffer_h = io.BytesIO()
                             res["heatmap"].save(buffer_h, format="PNG")
                             heatmap_b64 = base64.b64encode(buffer_h.getvalue()).decode("utf-8")
@@ -156,8 +165,7 @@ with tab_image:
                             res["cropped_face"].save(buffer_f, format="PNG")
                             face_b64 = base64.b64encode(buffer_f.getvalue()).decode("utf-8")
                         except Exception as fallback_err:
-                            st.error(f"Failed to connect to FastAPI backend server at '{api_base_url}' and direct fallback failed: {fallback_err}")
-                            st.warning("Please ensure FastAPI server is running (`uvicorn api.main:app --port 8000`) or model weights are present.")
+                            st.error(f"Failed to process image: {fallback_err}")
                             st.stop()
                             
                     # Render Verdict Badge
@@ -201,7 +209,7 @@ with tab_video:
                 with st.spinner("Sampling video frames, analyzing facial geometry, and aggregating timeline..."):
                     try:
                         files = {"file": (uploaded_video.name, uploaded_video.getvalue(), uploaded_video.type)}
-                        response = requests.post(f"{api_base_url}/predict-video", files=files, timeout=60)
+                        response = requests.post(f"{api_base_url}/predict-video", files=files, timeout=10)
                         
                         if response.status_code == 200:
                             data = response.json()
@@ -211,25 +219,50 @@ with tab_video:
                             rep_timestamp = data["representative_timestamp_sec"]
                             heatmap_b64 = data["heatmap_base64"]
                             face_b64 = data["representative_face_base64"]
-                            
-                            if verdict == "Real":
-                                st.markdown(f'<div class="badge-real">VIDEO VERDICT: REAL ({confidence*100:.1f}%)</div>', unsafe_allow_html=True)
-                            else:
-                                st.markdown(f'<div class="badge-fake">VIDEO VERDICT: FAKE ({confidence*100:.1f}%)</div>', unsafe_allow_html=True)
-                                
-                            st.write("")
-                            st.metric("Frames Analyzed", f"{total_frames} sampled frames")
-                            st.metric("Key Frame Timestamp", f"{rep_timestamp} seconds")
-                            
-                            c1, c2 = st.columns(2)
-                            with c1:
-                                st.image(base64_to_pil(face_b64), caption=f"Key Frame Face ({rep_timestamp}s)", use_container_width=True)
-                            with c2:
-                                st.image(base64_to_pil(heatmap_b64), caption="Key Frame Grad-CAM Heatmap", use_container_width=True)
                         else:
-                            st.error(f"API Error ({response.status_code}): {response.json().get('detail', 'Unknown error')}")
-                    except Exception as e:
-                        st.error(f"Failed to connect to FastAPI backend server at '{api_base_url}'. Error: {e}")
+                            raise RuntimeError(f"API Error {response.status_code}")
+                    except Exception:
+                        # Direct Fallback for Video
+                        try:
+                            predictor = get_standalone_predictor()
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+                                tmp_file.write(uploaded_video.getvalue())
+                                tmp_video_path = tmp_file.name
+                                
+                            res = predictor.predict_video(tmp_video_path, frame_interval_sec=1.0)
+                            if os.path.exists(tmp_video_path):
+                                os.remove(tmp_video_path)
+                                
+                            verdict = res["verdict"]
+                            confidence = res["confidence"]
+                            total_frames = res["total_frames_analyzed"]
+                            rep_timestamp = res["representative_timestamp"]
+                            
+                            buffer_h = io.BytesIO()
+                            res["representative_heatmap"].save(buffer_h, format="PNG")
+                            heatmap_b64 = base64.b64encode(buffer_h.getvalue()).decode("utf-8")
+                            
+                            buffer_f = io.BytesIO()
+                            res["representative_face"].save(buffer_f, format="PNG")
+                            face_b64 = base64.b64encode(buffer_f.getvalue()).decode("utf-8")
+                        except Exception as vid_fallback_err:
+                            st.error(f"Failed to process video: {vid_fallback_err}")
+                            st.stop()
+                            
+                    if verdict == "Real":
+                        st.markdown(f'<div class="badge-real">VIDEO VERDICT: REAL ({confidence*100:.1f}%)</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(f'<div class="badge-fake">VIDEO VERDICT: FAKE ({confidence*100:.1f}%)</div>', unsafe_allow_html=True)
+                        
+                    st.write("")
+                    st.metric("Frames Analyzed", f"{total_frames} sampled frames")
+                    st.metric("Key Frame Timestamp", f"{rep_timestamp} seconds")
+                    
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.image(base64_to_pil(face_b64), caption=f"Key Frame Face ({rep_timestamp}s)", use_container_width=True)
+                    with c2:
+                        st.image(base64_to_pil(heatmap_b64), caption="Key Frame Grad-CAM Heatmap", use_container_width=True)
 
 # ---------------------------------------------------------
 # TAB 3: SYSTEM INFO & HEALTH
@@ -245,7 +278,7 @@ with tab_info:
             else:
                 st.error(f"Health Check Failed: {res.status_code}")
         except Exception as e:
-            st.error(f"Backend Offline or Unreachable: {e}")
+            st.warning(f"Backend Offline ({e}). Running in Standalone Inference Fallback Mode.")
             
     st.markdown("""
     ### Technical Architecture Overview
