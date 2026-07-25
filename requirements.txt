@@ -5,11 +5,9 @@ facenet-pytorch
 grad-cam
 fastapi
 uvicorn
-streamlit
 pillow
 scikit-learn
 matplotlib
 numpy
-httpx
 requests
 python-multipart
